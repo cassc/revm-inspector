@@ -2,7 +2,7 @@ use eyre::Result;
 use primitive_types::{H160, H256};
 use std::{collections::HashMap, str::FromStr};
 use tokio::runtime::Runtime;
-use tracing::{debug, Level};
+use tracing::{info, Level};
 
 use ethers::{
     types::{BigEndianHash, BlockId},
@@ -40,7 +40,7 @@ impl ForkInspector {
         if let Some(account) = self.address_cache.get(&contract) {
             Ok(account.clone())
         } else {
-            debug!("Loading data for address: {:?}", contract);
+            info!("Loading data for address: {:?}", contract);
 
             let address = H160::from(*contract);
             let block_id = self.block_id;
@@ -81,37 +81,11 @@ impl Inspector<InMemoryDB> for ForkInspector {
     ) -> (InstructionResult, Gas, Bytes) {
         let contract = inputs.contract;
 
-        debug!("Maybe load data for address: {:?}", contract);
+        info!("Maybe load data for address: {:?}", contract);
 
         let loaded = matches!(data.db.basic(contract), Ok(Some(_)));
-        if !loaded && !self.address_cache.contains_key(&contract) {
-            debug!("Loading data for address: {:?}", contract);
-
-            let address = H160::from(*contract);
-            let block_id = self.block_id;
-            let balance = self.provider.get_balance(address, block_id);
-            let balance = self.runtime.block_on(balance).unwrap().into();
-
-            let code = self.provider.get_code(address, block_id);
-            let code: ethers::types::Bytes = self.runtime.block_on(code).unwrap();
-
-            let nonce = self.provider.get_transaction_count(address, block_id);
-            let nonce: u64 = self.runtime.block_on(nonce).unwrap().as_u64();
-
-            let (code, code_hash) = if !code.0.is_empty() {
-                (Some(code.0.clone()), keccak256(&code).into())
-            } else {
-                (Some(Bytes::default()), KECCAK_EMPTY)
-            };
-
-            let account = AccountInfo {
-                balance,
-                nonce,
-                code: code.map(|bytes| Bytecode::new_raw(bytes).to_checked()),
-                code_hash,
-            };
-
-            self.address_cache.insert(contract, account.clone());
+        if !loaded {
+            let account = self.load_address(contract).unwrap();
             data.db.insert_account_info(contract, account);
         }
 
@@ -129,11 +103,6 @@ impl Inspector<InMemoryDB> for ForkInspector {
         let pc = interp.program_counter();
         let address = H160::from(*b_address);
 
-        debug!(
-            "ForkInspector: address {:?} pc {:?} opcode: {:?}",
-            address, pc, opcode
-        );
-
         // NOTE assuming call always appears before sload for a new address
         if self.address_cache.contains_key(&b_address) {
             match opcode {
@@ -143,7 +112,7 @@ impl Inspector<InMemoryDB> for ForkInspector {
 
                     if let std::collections::hash_map::Entry::Vacant(e) = self
                         .address_slot_cache.entry((b_address, b_idx)) {
-                            debug!("SLOAD: {:?} {:?}", b_address, b_idx);
+                            info!("Load account slot data: {:?} {:?}", b_address, b_idx);
                             let block_id = self.block_id;
                             let idx = H256::from_uint(&b_idx.into());
                             let storage = self
@@ -191,7 +160,7 @@ impl Inspector<InMemoryDB> for ForkInspector {
                         };
 
 
-                        debug!("Maybe load data for address: {:?}", contract);
+                        info!("Maybe load data for address: {:?}", contract);
 
 
 
@@ -209,17 +178,6 @@ impl Inspector<InMemoryDB> for ForkInspector {
 
         InstructionResult::Continue
     }
-
-    fn step_end(
-        &mut self,
-        _interp: &mut Interpreter,
-        _data: &mut EVMData<'_, InMemoryDB>,
-        _is_static: bool,
-        _eval: InstructionResult,
-    ) -> InstructionResult {
-        println!("ForkInspector: step_end");
-        InstructionResult::Continue
-    }
 }
 
 fn transact_with_inspector() -> Result<()> {
@@ -229,7 +187,7 @@ fn transact_with_inspector() -> Result<()> {
 
     let n = runtime.block_on(provider.get_block_number()).unwrap();
 
-    println!("Current block number: {:?}", n);
+    info!("Current block number: {:?}", n);
 
     let mut inspector = ForkInspector::new(provider, Some(17890805), runtime);
     let sender = H160::from_str("0x36928500bc1dcd7af6a2b4008875cc336b927d57")?;
@@ -252,7 +210,7 @@ fn transact_with_inspector() -> Result<()> {
 
     let result = evm.inspect_commit(inspector);
 
-    println!("Result: {:?}", result);
+    info!("Result: {:?}", result);
 
     Ok(())
 }
